@@ -1,0 +1,141 @@
+{
+  "name": "06 - Daily Analytics Report Generator",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 23,
+              "triggerAtMinute": 55
+            }
+          ]
+        }
+      },
+      "id": "daily-trigger",
+      "name": "Daily at 11:55 PM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://localhost:3000/api/health",
+        "options": {}
+      },
+      "id": "check-api",
+      "name": "Check API Health",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, name FROM restaurants WHERE is_active = true",
+        "options": {}
+      },
+      "id": "get-restaurants",
+      "name": "Get Active Restaurants",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [650, 300],
+      "credentials": {
+        "postgres": { "id": "1", "name": "Restaurant DB" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT\n  COUNT(*) as total_orders,\n  COALESCE(SUM(total_amount), 0) as total_revenue,\n  COALESCE(AVG(total_amount), 0) as avg_order_value,\n  COUNT(CASE WHEN order_status = 'delivered' THEN 1 END) as delivered,\n  COUNT(CASE WHEN order_status = 'cancelled' THEN 1 END) as cancelled,\n  COUNT(CASE WHEN payment_method = 'bank_transfer' THEN 1 END) as bank_transfers,\n  COUNT(CASE WHEN payment_method = 'cod' THEN 1 END) as cod_orders\nFROM orders\nWHERE restaurant_id = '{{ $json.id }}'\n  AND DATE(order_placed_at) = CURRENT_DATE",
+        "options": {}
+      },
+      "id": "get-daily-stats",
+      "name": "Get Daily Stats",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [900, 300],
+      "credentials": {
+        "postgres": { "id": "1", "name": "Restaurant DB" }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=SELECT item->>'item_name' as item_name,\n  SUM((item->>'quantity')::int) as qty\nFROM orders, jsonb_array_elements(order_items) as item\nWHERE restaurant_id = '{{ $('Get Active Restaurants').item.json.id }}'\n  AND DATE(order_placed_at) = CURRENT_DATE\nGROUP BY item->>'item_name'\nORDER BY qty DESC\nLIMIT 5",
+        "options": {}
+      },
+      "id": "get-popular",
+      "name": "Get Popular Items",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1150, 300],
+      "credentials": {
+        "postgres": { "id": "1", "name": "Restaurant DB" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build daily report and store in analytics table\nconst stats = $('Get Daily Stats').first().json;\nconst popular = $('Get Popular Items').all().map(i => i.json);\nconst restaurant = $('Get Active Restaurants').item.json;\n\nconst report = {\n  restaurant_id: restaurant.id,\n  restaurant_name: restaurant.name,\n  date: new Date().toISOString().split('T')[0],\n  total_orders: parseInt(stats.total_orders) || 0,\n  total_revenue: parseFloat(stats.total_revenue) || 0,\n  avg_order_value: parseFloat(stats.avg_order_value) || 0,\n  delivered: parseInt(stats.delivered) || 0,\n  cancelled: parseInt(stats.cancelled) || 0,\n  bank_transfers: parseInt(stats.bank_transfers) || 0,\n  cod_orders: parseInt(stats.cod_orders) || 0,\n  popular_items: popular\n};\n\nreturn [{ json: report }];"
+      },
+      "id": "build-report",
+      "name": "Build Report Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1400, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=INSERT INTO analytics (restaurant_id, date, total_orders, total_revenue, average_order_value, payment_method_breakdown, popular_items)\nVALUES (\n  '{{ $json.restaurant_id }}',\n  '{{ $json.date }}',\n  {{ $json.total_orders }},\n  {{ $json.total_revenue }},\n  {{ $json.avg_order_value }},\n  '{{ JSON.stringify({ bank_transfer: $json.bank_transfers, cod: $json.cod_orders }) }}',\n  '{{ JSON.stringify($json.popular_items) }}'\n)\nON CONFLICT (restaurant_id, date) DO UPDATE SET\n  total_orders = EXCLUDED.total_orders,\n  total_revenue = EXCLUDED.total_revenue,\n  average_order_value = EXCLUDED.average_order_value,\n  payment_method_breakdown = EXCLUDED.payment_method_breakdown,\n  popular_items = EXCLUDED.popular_items",
+        "options": {}
+      },
+      "id": "save-analytics",
+      "name": "Save to Analytics Table",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1650, 300],
+      "credentials": {
+        "postgres": { "id": "1", "name": "Restaurant DB" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format report as WhatsApp message for owner\nconst data = $('Build Report Data').first().json;\n\nlet msg = `📊 *Daily Report — ${data.date}*\\n`;\nmsg += `🏪 ${data.restaurant_name}\\n\\n`;\nmsg += `📦 Total Orders: ${data.total_orders}\\n`;\nmsg += `💰 Revenue: PKR ${data.total_revenue.toLocaleString()}\\n`;\nmsg += `📈 Avg Order: PKR ${Math.round(data.avg_order_value)}\\n`;\nmsg += `✅ Delivered: ${data.delivered}\\n`;\nmsg += `❌ Cancelled: ${data.cancelled}\\n\\n`;\nmsg += `💳 Bank Transfers: ${data.bank_transfers}\\n`;\nmsg += `💵 COD: ${data.cod_orders}\\n\\n`;\n\nif (data.popular_items.length > 0) {\n  msg += `🏆 *Top Items:*\\n`;\n  data.popular_items.forEach((item, i) => {\n    msg += `${i + 1}. ${item.item_name} (${item.qty}x)\\n`;\n  });\n}\n\nmsg += `\\n---\\nGenerated automatically at ${new Date().toLocaleTimeString()}`;\n\nreturn [{ json: { message: msg, restaurant_id: data.restaurant_id } }];"
+      },
+      "id": "format-report",
+      "name": "Format Report Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1900, 300]
+    }
+  ],
+  "connections": {
+    "Daily at 11:55 PM": {
+      "main": [[{ "node": "Check API Health", "type": "main", "index": 0 }]]
+    },
+    "Check API Health": {
+      "main": [[{ "node": "Get Active Restaurants", "type": "main", "index": 0 }]]
+    },
+    "Get Active Restaurants": {
+      "main": [[{ "node": "Get Daily Stats", "type": "main", "index": 0 }]]
+    },
+    "Get Daily Stats": {
+      "main": [[{ "node": "Get Popular Items", "type": "main", "index": 0 }]]
+    },
+    "Get Popular Items": {
+      "main": [[{ "node": "Build Report Data", "type": "main", "index": 0 }]]
+    },
+    "Build Report Data": {
+      "main": [
+        [
+          { "node": "Save to Analytics Table", "type": "main", "index": 0 },
+          { "node": "Format Report Message", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "restaurant-automation" }, { "name": "analytics" }]
+}

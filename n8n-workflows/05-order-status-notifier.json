@@ -1,0 +1,153 @@
+{
+  "name": "05 - Order Status Update Notifier",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "order-status-update",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "status-webhook",
+      "name": "Status Update Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build status update message for WhatsApp\nconst data = $input.first().json.body;\n\nconst statusConfig = {\n  confirmed: {\n    emoji: '✅',\n    title: 'Order Confirmed',\n    body: 'Your order has been confirmed and will be prepared shortly!'\n  },\n  preparing: {\n    emoji: '👨‍🍳',\n    title: 'Being Prepared',\n    body: 'Our chef is preparing your delicious food!'\n  },\n  ready: {\n    emoji: '📦',\n    title: 'Ready for Pickup/Delivery',\n    body: 'Your order is ready and will be dispatched soon!'\n  },\n  out_for_delivery: {\n    emoji: '🚗',\n    title: 'Out for Delivery',\n    body: 'Your order is on the way! Get ready!'\n  },\n  delivered: {\n    emoji: '🎉',\n    title: 'Delivered',\n    body: 'Your order has been delivered! Enjoy your meal!\\n\\nThank you for ordering with us! 🙏'\n  },\n  cancelled: {\n    emoji: '❌',\n    title: 'Order Cancelled',\n    body: `Your order has been cancelled.${data.rejection_reason ? '\\nReason: ' + data.rejection_reason : ''}\\n\\nIf you have questions, please contact us.`\n  }\n};\n\nconst status = statusConfig[data.new_status] || {\n  emoji: '📋',\n  title: data.new_status?.replace(/_/g, ' ').toUpperCase() || 'Updated',\n  body: 'Your order status has been updated.'\n};\n\nlet message = `${status.emoji} *${status.title}*\\n\\n`;\nmessage += `🆔 Order #${data.order_id?.substring(0, 8)}\\n`;\nmessage += `${status.body}`;\n\nif (data.estimated_delivery_time) {\n  const eta = new Date(data.estimated_delivery_time);\n  message += `\\n\\n⏰ Estimated delivery: ${eta.toLocaleTimeString('en-PK', { hour: '2-digit', minute: '2-digit' })}`;\n}\n\nreturn [{\n  json: {\n    to: data.customer_phone,\n    message: message,\n    order_id: data.order_id,\n    new_status: data.new_status\n  }\n}];"
+      },
+      "id": "build-status-msg",
+      "name": "Build Status Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env.WHATSAPP_PHONE_ID }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.WHATSAPP_ACCESS_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $json.to }}\",\n  \"type\": \"text\",\n  \"text\": { \"body\": \"{{ $json.message }}\" }\n}",
+        "options": {}
+      },
+      "id": "send-status",
+      "name": "Send Status to Customer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [750, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'notified', order_id: $json.order_id }) }}",
+        "options": {}
+      },
+      "id": "respond",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.new_status }}",
+              "operation": "equals",
+              "value2": "delivered"
+            }
+          ]
+        }
+      },
+      "id": "check-delivered",
+      "name": "Is Delivered?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [750, 550]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Send feedback request after delivery\nconst data = $input.first().json;\n\nreturn [{\n  json: {\n    to: data.to,\n    message: `⭐ *How was your experience?*\\n\\nWe'd love your feedback!\\n\\nRate us (1-5 stars):\\n1️⃣ ⭐\\n2️⃣ ⭐⭐\\n3️⃣ ⭐⭐⭐\\n4️⃣ ⭐⭐⭐⭐\\n5️⃣ ⭐⭐⭐⭐⭐\\n\\nReply with a number (1-5)`\n  }\n}];"
+      },
+      "id": "feedback-request",
+      "name": "Request Feedback",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 550]
+    },
+    {
+      "parameters": {
+        "time": 5,
+        "unit": "minutes"
+      },
+      "id": "wait-5min",
+      "name": "Wait 5 Minutes",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [1250, 550]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env.WHATSAPP_PHONE_ID }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.WHATSAPP_ACCESS_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $json.to }}\",\n  \"type\": \"text\",\n  \"text\": { \"body\": \"{{ $json.message }}\" }\n}",
+        "options": {}
+      },
+      "id": "send-feedback-request",
+      "name": "Send Feedback Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1500, 550]
+    }
+  ],
+  "connections": {
+    "Status Update Webhook": {
+      "main": [[{ "node": "Build Status Message", "type": "main", "index": 0 }]]
+    },
+    "Build Status Message": {
+      "main": [
+        [
+          { "node": "Send Status to Customer", "type": "main", "index": 0 },
+          { "node": "Is Delivered?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Send Status to Customer": {
+      "main": [[{ "node": "Respond OK", "type": "main", "index": 0 }]]
+    },
+    "Is Delivered?": {
+      "main": [
+        [{ "node": "Request Feedback", "type": "main", "index": 0 }],
+        []
+      ]
+    },
+    "Request Feedback": {
+      "main": [[{ "node": "Wait 5 Minutes", "type": "main", "index": 0 }]]
+    },
+    "Wait 5 Minutes": {
+      "main": [[{ "node": "Send Feedback Request", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "restaurant-automation" }, { "name": "notifications" }]
+}

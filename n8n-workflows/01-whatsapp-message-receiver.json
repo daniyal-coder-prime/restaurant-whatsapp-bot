@@ -1,0 +1,234 @@
+{
+  "name": "01 - WhatsApp Message Receiver & Router",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-receive",
+      "name": "WhatsApp Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"status\": \"received\"}",
+        "options": {}
+      },
+      "id": "respond-ok",
+      "name": "Respond 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract WhatsApp message data from Meta webhook payload\nconst body = $input.first().json.body || $input.first().json;\n\n// Handle webhook verification (GET request)\nif (!body.entry) {\n  return [{ json: { type: 'verification', skip: true } }];\n}\n\nconst entry = body.entry[0];\nconst changes = entry.changes[0];\nconst value = changes.value;\n\n// Skip status updates (only process messages)\nif (!value.messages || value.messages.length === 0) {\n  return [{ json: { type: 'status_update', skip: true } }];\n}\n\nconst message = value.messages[0];\nconst contact = value.contacts[0];\n\nconst result = {\n  message_id: message.id,\n  from: message.from,  // Customer phone number\n  customer_name: contact.profile.name,\n  timestamp: message.timestamp,\n  type: message.type,  // text, image, interactive, etc.\n  text: '',\n  image_url: '',\n  interactive_reply: '',\n  skip: false\n};\n\n// Parse based on message type\nswitch (message.type) {\n  case 'text':\n    result.text = message.text.body.toLowerCase().trim();\n    break;\n  case 'image':\n    result.image_url = message.image.id;\n    result.text = message.image.caption || 'payment_screenshot';\n    break;\n  case 'interactive':\n    if (message.interactive.type === 'list_reply') {\n      result.interactive_reply = message.interactive.list_reply.id;\n      result.text = message.interactive.list_reply.title;\n    } else if (message.interactive.type === 'button_reply') {\n      result.interactive_reply = message.interactive.button_reply.id;\n      result.text = message.interactive.button_reply.title;\n    }\n    break;\n}\n\nreturn [{ json: result }];"
+      },
+      "id": "parse-message",
+      "name": "Parse WhatsApp Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [750, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "boolean": [
+            {
+              "value1": "={{ $json.skip }}",
+              "value2": true
+            }
+          ]
+        }
+      },
+      "id": "check-skip",
+      "name": "Should Skip?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.text }}",
+                    "rightValue": "menu|order|food|khana|khaana",
+                    "operator": { "type": "string", "operation": "regex" }
+                  }
+                ]
+              },
+              "renameOutput": "Menu Request"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.text }}",
+                    "rightValue": "status|track|where|kahan",
+                    "operator": { "type": "string", "operation": "regex" }
+                  }
+                ]
+              },
+              "renameOutput": "Order Status"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.type }}",
+                    "rightValue": "image",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": "Payment Screenshot"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.text }}",
+                    "rightValue": "hi|hello|assalam|salam|hey|start",
+                    "operator": { "type": "string", "operation": "regex" }
+                  }
+                ]
+              },
+              "renameOutput": "Greeting"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.interactive_reply }}",
+                    "rightValue": "",
+                    "operator": { "type": "string", "operation": "notEquals" }
+                  }
+                ]
+              },
+              "renameOutput": "Interactive Reply"
+            }
+          ],
+          "fallbackOutput": "Unknown"
+        }
+      },
+      "id": "route-message",
+      "name": "Route Message",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=http://localhost:3000/api/restaurants/{{ $json.restaurant_id }}/menu?available_only=true",
+        "options": {}
+      },
+      "id": "fetch-menu",
+      "name": "Fetch Menu API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1550, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Send greeting message via WhatsApp API\nconst from = $input.first().json.from;\nconst name = $input.first().json.customer_name;\n\nreturn [{\n  json: {\n    to: from,\n    message: `Assalam-o-Alaikum ${name}! 👋\\n\\nWelcome to our restaurant! 🍽️\\n\\nHere's what I can help you with:\\n\\n1️⃣ Type *menu* - See our full menu\\n2️⃣ Type *status* - Track your order\\n3️⃣ Send a *screenshot* - For payment verification\\n\\nWhat would you like to do?`\n  }\n}];"
+      },
+      "id": "greeting-response",
+      "name": "Greeting Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1550, 450]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env.WHATSAPP_PHONE_ID }}/messages",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "=Bearer {{ $env.WHATSAPP_ACCESS_TOKEN }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $json.to }}\",\n  \"type\": \"text\",\n  \"text\": {\n    \"body\": \"{{ $json.message }}\"\n  }\n}",
+        "options": {}
+      },
+      "id": "send-whatsapp",
+      "name": "Send WhatsApp Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1800, 450]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Handle unknown commands\nconst from = $input.first().json.from;\n\nreturn [{\n  json: {\n    to: from,\n    message: `Sorry, I didn't understand that. 🤔\\n\\nPlease try:\\n• Type *menu* to see our food items\\n• Type *status* to track your order\\n• Send a payment *screenshot* for verification`\n  }\n}];"
+      },
+      "id": "unknown-response",
+      "name": "Unknown Command",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1550, 650]
+    }
+  ],
+  "connections": {
+    "WhatsApp Webhook": {
+      "main": [
+        [
+          { "node": "Respond 200", "type": "main", "index": 0 },
+          { "node": "Parse WhatsApp Message", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Parse WhatsApp Message": {
+      "main": [
+        [{ "node": "Should Skip?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Should Skip?": {
+      "main": [
+        [],
+        [{ "node": "Route Message", "type": "main", "index": 0 }]
+      ]
+    },
+    "Route Message": {
+      "main": [
+        [{ "node": "Fetch Menu API", "type": "main", "index": 0 }],
+        [],
+        [],
+        [{ "node": "Greeting Response", "type": "main", "index": 0 }],
+        [],
+        [{ "node": "Unknown Command", "type": "main", "index": 0 }]
+      ]
+    },
+    "Greeting Response": {
+      "main": [
+        [{ "node": "Send WhatsApp Message", "type": "main", "index": 0 }]
+      ]
+    },
+    "Unknown Command": {
+      "main": [
+        [{ "node": "Send WhatsApp Message", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [{ "name": "restaurant-automation" }, { "name": "whatsapp" }]
+}

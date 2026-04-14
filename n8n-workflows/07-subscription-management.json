@@ -1,0 +1,221 @@
+{
+  "name": "07 - Subscription Management",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 9,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      },
+      "id": "daily-check",
+      "name": "Daily 9 AM Check",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT r.id, r.name, r.owner_name, r.phone, r.whatsapp_number,\n  r.subscription_end_date, r.monthly_fee,\n  (r.subscription_end_date - CURRENT_DATE) as days_remaining\nFROM restaurants r\nWHERE r.is_active = true\n  AND r.subscription_end_date <= CURRENT_DATE + INTERVAL '7 days'",
+        "options": {}
+      },
+      "id": "check-expiring",
+      "name": "Check Expiring Subscriptions",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [500, 300],
+      "credentials": {
+        "postgres": { "id": "1", "name": "Restaurant DB" }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "number": [
+            {
+              "value1": "={{ $json.days_remaining }}",
+              "operation": "smallerEqual",
+              "value2": 0
+            }
+          ]
+        }
+      },
+      "id": "check-expired",
+      "name": "Already Expired?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [750, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE restaurants SET is_active = false WHERE id = '{{ $json.id }}'",
+        "options": {}
+      },
+      "id": "deactivate",
+      "name": "Deactivate Restaurant",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1000, 200],
+      "credentials": {
+        "postgres": { "id": "1", "name": "Restaurant DB" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Send expiration notice\nconst r = $('Check Expiring Subscriptions').item.json;\n\nreturn [{\n  json: {\n    to: r.whatsapp_number || r.phone,\n    message: `⚠️ *Subscription Expired*\\n\\n${r.name}\\n\\nYour subscription has expired. Your restaurant's WhatsApp ordering service has been paused.\\n\\n💳 To renew: Transfer PKR ${r.monthly_fee} to:\\nBank: HBL\\nAccount: PK36HABB0000111222333444\\nName: Restaurant SaaS\\n\\n📸 Send payment screenshot to reactivate!`\n  }\n}];"
+      },
+      "id": "expired-msg",
+      "name": "Expired Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1250, 200]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Send renewal reminder (3-7 days before expiry)\nconst r = $('Check Expiring Subscriptions').item.json;\nconst days = r.days_remaining;\n\nreturn [{\n  json: {\n    to: r.whatsapp_number || r.phone,\n    message: `🔔 *Subscription Renewal Reminder*\\n\\n${r.name}\\n\\nYour subscription expires in *${days} day${days > 1 ? 's' : ''}*.\\n\\n💳 Renew now for uninterrupted service!\\nAmount: PKR ${r.monthly_fee}/month\\n\\nBank: HBL\\nAccount: PK36HABB0000111222333444\\nName: Restaurant SaaS\\n\\n📸 Send payment screenshot after transfer.`\n  }\n}];"
+      },
+      "id": "reminder-msg",
+      "name": "Reminder Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1000, 450]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env.WHATSAPP_PHONE_ID }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.WHATSAPP_ACCESS_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $json.to }}\",\n  \"type\": \"text\",\n  \"text\": { \"body\": \"{{ $json.message }}\" }\n}",
+        "options": {}
+      },
+      "id": "send-notification",
+      "name": "Send WhatsApp Notification",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1500, 350]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "subscription-renewed",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "renewal-webhook",
+      "name": "Subscription Renewed Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 650]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "=UPDATE restaurants\nSET is_active = true,\n    subscription_start_date = CURRENT_DATE,\n    subscription_end_date = CURRENT_DATE + INTERVAL '30 days'\nWHERE id = '{{ $json.body.restaurant_id }}'\nRETURNING id, name, subscription_end_date",
+        "options": {}
+      },
+      "id": "renew-subscription",
+      "name": "Renew Subscription in DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [500, 650],
+      "credentials": {
+        "postgres": { "id": "1", "name": "Restaurant DB" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build renewal confirmation\nconst data = $input.first().json;\nconst input = $('Subscription Renewed Webhook').first().json.body;\n\nreturn [{\n  json: {\n    to: input.phone,\n    message: `✅ *Subscription Renewed!*\\n\\n${data.name || 'Your restaurant'} is now active!\\n\\n📅 New expiry: ${data.subscription_end_date?.split('T')[0]}\\n\\nThank you for your continued trust! 🙏`\n  }\n}];"
+      },
+      "id": "renewal-confirmation",
+      "name": "Build Renewal Confirmation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [750, 650]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env.WHATSAPP_PHONE_ID }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.WHATSAPP_ACCESS_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $json.to }}\",\n  \"type\": \"text\",\n  \"text\": { \"body\": \"{{ $json.message }}\" }\n}",
+        "options": {}
+      },
+      "id": "send-renewal-confirm",
+      "name": "Send Renewal Confirmation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1000, 650]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"status\": \"renewed\"}",
+        "options": {}
+      },
+      "id": "respond-renewed",
+      "name": "Respond Renewed",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1250, 650]
+    }
+  ],
+  "connections": {
+    "Daily 9 AM Check": {
+      "main": [[{ "node": "Check Expiring Subscriptions", "type": "main", "index": 0 }]]
+    },
+    "Check Expiring Subscriptions": {
+      "main": [[{ "node": "Already Expired?", "type": "main", "index": 0 }]]
+    },
+    "Already Expired?": {
+      "main": [
+        [{ "node": "Deactivate Restaurant", "type": "main", "index": 0 }],
+        [{ "node": "Reminder Message", "type": "main", "index": 0 }]
+      ]
+    },
+    "Deactivate Restaurant": {
+      "main": [[{ "node": "Expired Message", "type": "main", "index": 0 }]]
+    },
+    "Expired Message": {
+      "main": [[{ "node": "Send WhatsApp Notification", "type": "main", "index": 0 }]]
+    },
+    "Reminder Message": {
+      "main": [[{ "node": "Send WhatsApp Notification", "type": "main", "index": 0 }]]
+    },
+    "Subscription Renewed Webhook": {
+      "main": [[{ "node": "Renew Subscription in DB", "type": "main", "index": 0 }]]
+    },
+    "Renew Subscription in DB": {
+      "main": [[{ "node": "Build Renewal Confirmation", "type": "main", "index": 0 }]]
+    },
+    "Build Renewal Confirmation": {
+      "main": [[{ "node": "Send Renewal Confirmation", "type": "main", "index": 0 }]]
+    },
+    "Send Renewal Confirmation": {
+      "main": [[{ "node": "Respond Renewed", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "restaurant-automation" }, { "name": "subscriptions" }]
+}

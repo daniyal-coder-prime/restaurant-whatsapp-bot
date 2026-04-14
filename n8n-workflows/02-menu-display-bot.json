@@ -1,0 +1,76 @@
+{
+  "name": "02 - Menu Display Bot",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "show-menu",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0002-0002-0002-000000000001",
+      "name": "Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "notes": "Called internally from Workflow 01 or directly. Expects body: { from: customerPhone }"
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $env.BACKEND_URL }}/api/menu/{{ $env.RESTAURANT_ID }}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0002-0002-0002-000000000002",
+      "name": "Fetch Menu",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all().map(i => i.json);\nconst customerPhone = $('Trigger').item.json.body?.from || $('Trigger').item.json.from;\n\nconst staticData = $getWorkflowStaticData('global');\nstaticData[customerPhone] = { step: 'cart_building', items_list: items };\n\nlet text = '*Welcome to Ahmed Biryani House!*\\n\\n';\nlet currentCategory = '';\n\nitems.forEach((item, i) => {\n  if (item.category !== currentCategory) {\n    currentCategory = item.category;\n    text += `\\n*── ${currentCategory} ──*\\n`;\n  }\n  text += `${i + 1}. ${item.item_name} — PKR ${item.price}\\n`;\n  if (item.description) text += `   _${item.description}_\\n`;\n});\n\ntext += '\\n*How to order:*\\n';\ntext += 'Type item numbers + qty. Example:\\n';\ntext += '`1 x2, 3 x1`\\n\\n';\ntext += 'Reply *DONE* when finished.';\n\nreturn [{ json: { message: text, to: customerPhone } }];"
+      },
+      "id": "a1b2c3d4-0002-0002-0002-000000000003",
+      "name": "Format Menu",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v19.0/{{ $env.WA_PHONE_NUMBER_ID }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $json.to }}\",\n  \"type\": \"text\",\n  \"text\": { \"body\": {{ JSON.stringify($json.message) }} }\n}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0002-0002-0002-000000000004",
+      "name": "Send Menu to Customer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 300],
+      "credentials": {
+        "httpHeaderAuth": { "id": "waCredential", "name": "WhatsApp API" }
+      }
+    }
+  ],
+  "connections": {
+    "Trigger": {
+      "main": [[{ "node": "Fetch Menu", "type": "main", "index": 0 }]]
+    },
+    "Fetch Menu": {
+      "main": [[{ "node": "Format Menu", "type": "main", "index": 0 }]]
+    },
+    "Format Menu": {
+      "main": [[{ "node": "Send Menu to Customer", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "id": "restaurant-bot-workflow-02",
+  "tags": [{ "name": "restaurant-bot" }]
+}

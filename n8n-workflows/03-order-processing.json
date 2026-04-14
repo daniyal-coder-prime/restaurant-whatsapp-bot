@@ -1,0 +1,249 @@
+{
+  "name": "03 - Order Completion & Admin Notification",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "order-completion",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0003-0003-0003-000000000001",
+      "name": "Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300],
+      "notes": "Receives: { from, text } — handles conversation steps via static data state machine"
+    },
+    {
+      "parameters": {
+        "jsCode": "// State machine — tracks each customer's conversation step\nconst staticData = $getWorkflowStaticData('global');\nconst customerPhone = $json.body?.from || $json.from;\nconst text = ($json.body?.text || $json.text || '').trim();\n\nconst state = staticData[customerPhone] || { step: 'start' };\n\nreturn [{ json: { customerPhone, text, state, staticData } }];"
+      },
+      "id": "a1b2c3d4-0003-0003-0003-000000000002",
+      "name": "Load State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.state.step }}",
+                    "rightValue": "awaiting_name",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "awaiting_name"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.state.step }}",
+                    "rightValue": "awaiting_address",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "awaiting_address"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.state.step }}",
+                    "rightValue": "awaiting_payment",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "awaiting_payment"
+            }
+          ]
+        },
+        "fallbackOutput": "extra"
+      },
+      "id": "a1b2c3d4-0003-0003-0003-000000000003",
+      "name": "Step Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Save customer name, advance to awaiting_address\nconst staticData = $json.staticData;\nconst phone = $json.customerPhone;\nconst name = $json.text;\n\nstaticData[phone] = { ...staticData[phone], step: 'awaiting_address', customer_name: name };\n\nreturn [{ json: {\n  to: phone,\n  message: `Got it, ${name}! What's your delivery address?`\n} }];"
+      },
+      "id": "a1b2c3d4-0003-0003-0003-000000000004",
+      "name": "Save Name",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 160]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Save address, advance to awaiting_payment\nconst staticData = $json.staticData;\nconst phone = $json.customerPhone;\n\nstaticData[phone] = { ...staticData[phone], step: 'awaiting_payment', delivery_address: $json.text };\n\nreturn [{ json: {\n  to: phone,\n  message: 'How would you like to pay?\\n\\n1) Bank Transfer\\n2) Cash on Delivery (COD)\\n\\nReply *1* or *2*.'\n} }];"
+      },
+      "id": "a1b2c3d4-0003-0003-0003-000000000005",
+      "name": "Save Address",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const staticData = $json.staticData;\nconst phone = $json.customerPhone;\nconst choice = $json.text;\nconst state = staticData[phone];\n\nconst paymentMethod = (choice === '1' || choice.includes('bank')) ? 'bank_transfer' : 'cod';\nstaticData[phone] = { ...state, step: 'order_placing', payment_method: paymentMethod };\n\nif (paymentMethod === 'bank_transfer') {\n  return [{ json: {\n    to: phone,\n    message: `Please transfer PKR ${state.total} to:\\n\\nBank: HBL\\nAccount: 1234-5678-9012\\nName: Ahmed Khan\\n\\nSend screenshot after transfer.`,\n    state: staticData[phone],\n    do_save_order: true\n  } }];\n} else {\n  return [{ json: {\n    to: phone,\n    message: null,\n    state: staticData[phone],\n    do_save_order: true\n  } }];\n}"
+      },
+      "id": "a1b2c3d4-0003-0003-0003-000000000006",
+      "name": "Save Payment Choice",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 440]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse cart from customer input — e.g. '1 x2, 3 x1'\nconst staticData = $json.staticData;\nconst phone = $json.customerPhone;\nconst text = $json.text;\nconst state = staticData[phone] || {};\nconst itemsList = state.items_list || [];\n\n// Parse: '1 x2, 3 x1' or '1x2 3x1'\nconst parsed = [];\nconst matches = text.matchAll(/(\\d+)\\s*[xX]\\s*(\\d+)/g);\nfor (const m of matches) {\n  const idx = parseInt(m[1]) - 1;\n  const qty = parseInt(m[2]);\n  if (itemsList[idx]) {\n    parsed.push({ name: itemsList[idx].item_name, qty, price: itemsList[idx].price });\n  }\n}\n\nif (!parsed.length) {\n  return [{ json: {\n    to: phone,\n    message: 'Could not parse your order. Example: `1 x2, 3 x1`\\nPlease try again or reply *hi* to see the menu.'\n  } }];\n}\n\nconst total = parsed.reduce((sum, i) => sum + i.price * i.qty, 0);\nlet summary = '*Your Order:*\\n';\nparsed.forEach(i => { summary += `• ${i.name} x${i.qty} — PKR ${i.price * i.qty}\\n`; });\nsummary += `\\n*Total: PKR ${total}*`;\n\nstaticData[phone] = { step: 'awaiting_name', cart: parsed, total };\n\nreturn [{ json: {\n  to: phone,\n  message: summary + '\\n\\nWhat\\'s your name?',\n  staticData\n} }];"
+      },
+      "id": "a1b2c3d4-0003-0003-0003-000000000007",
+      "name": "Parse Cart (DONE trigger)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [900, 580],
+      "notes": "This node handles the initial DONE trigger — parses cart from static data"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.BACKEND_URL }}/api/orders",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"restaurant_id\": \"{{ $env.RESTAURANT_ID }}\",\n  \"customer_phone\": \"{{ $json.state.customerPhone || $json.to }}\",\n  \"customer_name\": \"{{ $json.state.customer_name }}\",\n  \"delivery_address\": \"{{ $json.state.delivery_address }}\",\n  \"order_items\": {{ JSON.stringify($json.state.cart) }},\n  \"total_amount\": {{ $json.state.total }},\n  \"payment_method\": \"{{ $json.state.payment_method }}\"\n}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0003-0003-0003-000000000008",
+      "name": "Save Order to DB",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1120, 440]
+    },
+    {
+      "parameters": {
+        "jsCode": "const state = $('Save Payment Choice').item.json.state;\nconst orderId = $json.order_id;\nconst phone = state.customerPhone || $('Save Payment Choice').item.json.to;\n\n// Clear state\nconst staticData = $getWorkflowStaticData('global');\ndelete staticData[phone];\n\nlet itemList = '';\nstate.cart.forEach(i => { itemList += `• ${i.name} x${i.qty} — PKR ${i.price * i.qty}\\n`; });\n\nconst customerMsg = `✅ Order #${orderId} placed!\\n\\n${itemList}\\nTotal: PKR ${state.total}\\nPayment: ${state.payment_method === 'bank_transfer' ? 'Bank Transfer' : 'Cash on Delivery'}\\n\\nWe'll start preparing soon!`;\n\nconst adminMsg = `🆕 New Order #${orderId}\\n\\n👤 ${state.customer_name}\\n📞 ${phone}\\n📍 ${state.delivery_address}\\n\\n🧾 Items:\\n${itemList}\\n💰 Total: PKR ${state.total}\\n💳 Payment: ${state.payment_method === 'bank_transfer' ? 'Bank Transfer — awaiting screenshot' : 'Cash on Delivery'}`;\n\nreturn [{ json: { orderId, phone, customerMsg, adminMsg } }];"
+      },
+      "id": "a1b2c3d4-0003-0003-0003-000000000009",
+      "name": "Build Notifications",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 440]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v19.0/{{ $env.WA_PHONE_NUMBER_ID }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $json.phone }}\",\n  \"type\": \"text\",\n  \"text\": { \"body\": {{ JSON.stringify($json.customerMsg) }} }\n}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0003-0003-0003-000000000010",
+      "name": "Notify Customer",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1560, 360],
+      "credentials": {
+        "httpHeaderAuth": { "id": "waCredential", "name": "WhatsApp API" }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v19.0/{{ $env.WA_PHONE_NUMBER_ID }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $env.ADMIN_WHATSAPP }}\",\n  \"type\": \"text\",\n  \"text\": { \"body\": {{ JSON.stringify($json.adminMsg) }} }\n}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0003-0003-0003-000000000011",
+      "name": "Notify Admin",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1560, 520],
+      "credentials": {
+        "httpHeaderAuth": { "id": "waCredential", "name": "WhatsApp API" }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v19.0/{{ $env.WA_PHONE_NUMBER_ID }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $json.to }}\",\n  \"type\": \"text\",\n  \"text\": { \"body\": {{ JSON.stringify($json.message) }} }\n}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0003-0003-0003-000000000012",
+      "name": "Send Reply",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1120, 240],
+      "credentials": {
+        "httpHeaderAuth": { "id": "waCredential", "name": "WhatsApp API" }
+      },
+      "notes": "Generic reply sender — used for name/address/payment steps"
+    }
+  ],
+  "connections": {
+    "Trigger": {
+      "main": [[{ "node": "Load State", "type": "main", "index": 0 }]]
+    },
+    "Load State": {
+      "main": [[{ "node": "Step Router", "type": "main", "index": 0 }]]
+    },
+    "Step Router": {
+      "main": [
+        [{ "node": "Save Name", "type": "main", "index": 0 }],
+        [{ "node": "Save Address", "type": "main", "index": 0 }],
+        [{ "node": "Save Payment Choice", "type": "main", "index": 0 }],
+        [{ "node": "Parse Cart (DONE trigger)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Save Name": {
+      "main": [[{ "node": "Send Reply", "type": "main", "index": 0 }]]
+    },
+    "Save Address": {
+      "main": [[{ "node": "Send Reply", "type": "main", "index": 0 }]]
+    },
+    "Save Payment Choice": {
+      "main": [[{ "node": "Save Order to DB", "type": "main", "index": 0 }]]
+    },
+    "Save Order to DB": {
+      "main": [[{ "node": "Build Notifications", "type": "main", "index": 0 }]]
+    },
+    "Build Notifications": {
+      "main": [
+        [
+          { "node": "Notify Customer", "type": "main", "index": 0 },
+          { "node": "Notify Admin", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "id": "restaurant-bot-workflow-03",
+  "tags": [{ "name": "restaurant-bot" }]
+}

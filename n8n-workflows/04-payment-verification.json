@@ -1,0 +1,214 @@
+{
+  "name": "04 - Payment Verification Handler",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "payment-screenshot",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "payment-webhook",
+      "name": "Payment Screenshot Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract payment screenshot info\n// In production, the WhatsApp image ID is used to download the actual image\nconst data = $input.first().json.body;\n\nreturn [{\n  json: {\n    order_id: data.order_id,\n    customer_phone: data.customer_phone,\n    customer_name: data.customer_name,\n    restaurant_id: data.restaurant_id,\n    image_id: data.image_id,       // WhatsApp media ID\n    image_url: data.image_url || '',\n    expected_amount: data.expected_amount || 0\n  }\n}];"
+      },
+      "id": "extract-data",
+      "name": "Extract Screenshot Data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "=https://graph.facebook.com/v18.0/{{ $json.image_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.WHATSAPP_ACCESS_TOKEN }}" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "get-media-url",
+      "name": "Get Media URL from WhatsApp",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [750, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.WHATSAPP_ACCESS_TOKEN }}" }
+          ]
+        },
+        "options": { "response": { "response": { "responseFormat": "file" } } }
+      },
+      "id": "download-image",
+      "name": "Download Screenshot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1000, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://localhost:3000/api/payment-verification/{{ $('Extract Screenshot Data').first().json.order_id }}/screenshot",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"screenshot_url\": \"{{ $json.url || 'pending_upload' }}\"\n}",
+        "options": {}
+      },
+      "id": "save-to-api",
+      "name": "Save Screenshot to API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Send acknowledgment to customer\nconst data = $('Extract Screenshot Data').first().json;\n\nreturn [{\n  json: {\n    to: data.customer_phone,\n    message: `📸 *Payment Screenshot Received!*\\n\\nOrder #${data.order_id?.substring(0, 8)}\\n\\nOur team is verifying your payment. You'll receive confirmation shortly.\\n\\n⏳ Verification usually takes 2-5 minutes.`\n  }\n}];"
+      },
+      "id": "ack-customer",
+      "name": "Acknowledge Customer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1500, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env.WHATSAPP_PHONE_ID }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.WHATSAPP_ACCESS_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $json.to }}\",\n  \"type\": \"text\",\n  \"text\": { \"body\": \"{{ $json.message }}\" }\n}",
+        "options": {}
+      },
+      "id": "send-ack",
+      "name": "Send Acknowledgment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1750, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"status\": \"screenshot_received\", \"verification\": \"pending\"}",
+        "options": {}
+      },
+      "id": "respond",
+      "name": "Respond OK",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [2000, 300]
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "payment-verified",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "verified-webhook",
+      "name": "Payment Verified Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Admin verified/rejected payment — notify customer\nconst data = $input.first().json.body;\nconst result = data.verification_result; // 'approved' or 'rejected'\n\nlet message = '';\nif (result === 'approved') {\n  message = `✅ *Payment Verified!*\\n\\nOrder #${data.order_id?.substring(0, 8)}\\nAmount: PKR ${data.total_amount}\\n\\nYour order has been confirmed and is being prepared! 🍳\\n\\nWe'll update you on the progress.`;\n} else {\n  message = `❌ *Payment Not Verified*\\n\\nOrder #${data.order_id?.substring(0, 8)}\\n\\nReason: ${data.notes || 'Could not verify payment'}\\n\\nPlease resend the correct payment screenshot or contact us for help.`;\n}\n\nreturn [{\n  json: {\n    to: data.customer_phone,\n    message: message\n  }\n}];"
+      },
+      "id": "build-verification-msg",
+      "name": "Build Verification Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [500, 600]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v18.0/{{ $env.WHATSAPP_PHONE_ID }}/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.WHATSAPP_ACCESS_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $json.to }}\",\n  \"type\": \"text\",\n  \"text\": { \"body\": \"{{ $json.message }}\" }\n}",
+        "options": {}
+      },
+      "id": "send-verification-result",
+      "name": "Send Verification Result",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [750, 600]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\"status\": \"notification_sent\"}",
+        "options": {}
+      },
+      "id": "respond-verified",
+      "name": "Respond Verified",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1000, 600]
+    }
+  ],
+  "connections": {
+    "Payment Screenshot Webhook": {
+      "main": [[{ "node": "Extract Screenshot Data", "type": "main", "index": 0 }]]
+    },
+    "Extract Screenshot Data": {
+      "main": [[{ "node": "Get Media URL from WhatsApp", "type": "main", "index": 0 }]]
+    },
+    "Get Media URL from WhatsApp": {
+      "main": [[{ "node": "Download Screenshot", "type": "main", "index": 0 }]]
+    },
+    "Download Screenshot": {
+      "main": [[{ "node": "Save Screenshot to API", "type": "main", "index": 0 }]]
+    },
+    "Save Screenshot to API": {
+      "main": [[{ "node": "Acknowledge Customer", "type": "main", "index": 0 }]]
+    },
+    "Acknowledge Customer": {
+      "main": [[{ "node": "Send Acknowledgment", "type": "main", "index": 0 }]]
+    },
+    "Send Acknowledgment": {
+      "main": [[{ "node": "Respond OK", "type": "main", "index": 0 }]]
+    },
+    "Payment Verified Webhook": {
+      "main": [[{ "node": "Build Verification Message", "type": "main", "index": 0 }]]
+    },
+    "Build Verification Message": {
+      "main": [[{ "node": "Send Verification Result", "type": "main", "index": 0 }]]
+    },
+    "Send Verification Result": {
+      "main": [[{ "node": "Respond Verified", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "restaurant-automation" }, { "name": "payments" }]
+}

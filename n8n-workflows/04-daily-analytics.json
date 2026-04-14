@@ -1,0 +1,82 @@
+{
+  "name": "04 - Daily Analytics Report",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 23 * * *"
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0004-0004-0004-000000000001",
+      "name": "Daily 11PM",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT COUNT(*) as total_orders, COALESCE(SUM(total_amount), 0) as revenue, COUNT(CASE WHEN payment_method = 'cod' THEN 1 END) as cod_orders, COUNT(CASE WHEN payment_method = 'bank_transfer' THEN 1 END) as bank_orders, COUNT(CASE WHEN order_status = 'delivered' THEN 1 END) as delivered FROM orders WHERE restaurant_id = '{{ $env.RESTAURANT_ID }}' AND DATE(created_at) = CURRENT_DATE",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0004-0004-0004-000000000002",
+      "name": "Query Today Orders",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [460, 300],
+      "credentials": {
+        "postgres": { "id": "postgresCredential", "name": "PostgreSQL" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const row = $input.first().json;\nconst today = new Date().toLocaleDateString('en-PK', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });\n\nconst report = `Daily Report — ${today}\\n\\n` +\n  `Total Orders: ${row.total_orders}\\n` +\n  `Revenue: PKR ${parseFloat(row.revenue).toLocaleString()}\\n` +\n  `Delivered: ${row.delivered}\\n\\n` +\n  `Bank Transfer: ${row.bank_orders}\\n` +\n  `Cash on Delivery: ${row.cod_orders}\\n\\n` +\n  (row.total_orders > 0 ? 'Good work today!' : 'No orders today.');\n\nreturn [{ json: { report } }];"
+      },
+      "id": "a1b2c3d4-0004-0004-0004-000000000003",
+      "name": "Format Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v19.0/{{ $env.WA_PHONE_NUMBER_ID }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $env.ADMIN_WHATSAPP }}\",\n  \"type\": \"text\",\n  \"text\": { \"body\": {{ JSON.stringify($json.report) }} }\n}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0004-0004-0004-000000000004",
+      "name": "Send Report to Admin",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [900, 300],
+      "credentials": {
+        "httpHeaderAuth": { "id": "waCredential", "name": "WhatsApp API" }
+      }
+    }
+  ],
+  "connections": {
+    "Daily 11PM": {
+      "main": [[{ "node": "Query Today Orders", "type": "main", "index": 0 }]]
+    },
+    "Query Today Orders": {
+      "main": [[{ "node": "Format Report", "type": "main", "index": 0 }]]
+    },
+    "Format Report": {
+      "main": [[{ "node": "Send Report to Admin", "type": "main", "index": 0 }]]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "id": "restaurant-bot-workflow-04",
+  "tags": [{ "name": "restaurant-bot" }]
+}

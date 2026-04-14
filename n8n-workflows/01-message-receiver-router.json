@@ -1,0 +1,231 @@
+{
+  "name": "01 - Message Receiver & Router",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000001",
+      "name": "WhatsApp Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "string": [
+            {
+              "value1": "={{ $json.query['hub.mode'] }}",
+              "operation": "equals",
+              "value2": "subscribe"
+            }
+          ]
+        }
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000002",
+      "name": "Is Verification?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $('WhatsApp Webhook').item.json.query['hub.challenge'] }}",
+        "options": { "responseCode": 200 }
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000003",
+      "name": "Respond Challenge",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [680, 180]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body;\nconst entry = body.entry?.[0];\nconst change = entry?.changes?.[0]?.value;\nconst message = change?.messages?.[0];\n\nif (!message) return [];\n\nreturn [{\n  json: {\n    from: message.from,\n    type: message.type,\n    text: message.text?.body?.toLowerCase().trim() || '',\n    media_id: message.image?.id || null,\n    timestamp: message.timestamp,\n    phone_number_id: change.metadata?.phone_number_id\n  }\n}];"
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000004",
+      "name": "Parse Message",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [680, 400]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "OK",
+        "options": { "responseCode": 200 }
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000005",
+      "name": "Ack 200",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [900, 400]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.type }}",
+                    "rightValue": "image",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "image"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.text }}",
+                    "rightValue": "hi|hello|start|menu|1",
+                    "operator": { "type": "string", "operation": "regex" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "menu"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.text }}",
+                    "rightValue": "done|confirm|2",
+                    "operator": { "type": "string", "operation": "regex" }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "order"
+            }
+          ]
+        },
+        "fallbackOutput": "extra"
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000006",
+      "name": "Route Message",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1120, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v19.0/{{ $env.WA_PHONE_NUMBER_ID }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "messaging_product",
+              "value": "whatsapp"
+            },
+            {
+              "name": "to",
+              "value": "={{ $json.from }}"
+            },
+            {
+              "name": "type",
+              "value": "text"
+            },
+            {
+              "name": "text",
+              "value": "={{ JSON.stringify({ body: 'Sorry, I did not understand. Reply *hi* to see the menu or *done* to confirm your order.' }) }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000007",
+      "name": "Send Help Message",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1340, 560],
+      "credentials": {
+        "httpHeaderAuth": { "id": "waCredential", "name": "WhatsApp API" }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Forward payment screenshot to admin\nconst mediaId = $json.media_id;\nconst from = $json.from;\n\n// Step 1: tell the next nodes what to do\nreturn [{ json: { media_id: mediaId, from, action: 'forward_screenshot' } }];"
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000008",
+      "name": "Handle Screenshot",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1340, 380]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v19.0/{{ $env.WA_PHONE_NUMBER_ID }}/messages",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"messaging_product\": \"whatsapp\",\n  \"to\": \"{{ $env.ADMIN_WHATSAPP }}\",\n  \"type\": \"image\",\n  \"image\": {\n    \"id\": \"{{ $json.media_id }}\",\n    \"caption\": \"Payment screenshot from {{ $json.from }}\"\n  }\n}",
+        "options": {}
+      },
+      "id": "a1b2c3d4-0001-0001-0001-000000000009",
+      "name": "Forward Screenshot to Admin",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [1560, 300],
+      "credentials": {
+        "httpHeaderAuth": { "id": "waCredential", "name": "WhatsApp API" }
+      }
+    }
+  ],
+  "connections": {
+    "WhatsApp Webhook": {
+      "main": [
+        [{ "node": "Is Verification?", "type": "main", "index": 0 }]
+      ]
+    },
+    "Is Verification?": {
+      "main": [
+        [{ "node": "Respond Challenge", "type": "main", "index": 0 }],
+        [{ "node": "Parse Message", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse Message": {
+      "main": [
+        [
+          { "node": "Ack 200", "type": "main", "index": 0 },
+          { "node": "Route Message", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Route Message": {
+      "main": [
+        [{ "node": "Handle Screenshot", "type": "main", "index": 0 }],
+        [],
+        [],
+        [{ "node": "Send Help Message", "type": "main", "index": 0 }]
+      ]
+    },
+    "Handle Screenshot": {
+      "main": [
+        [{ "node": "Forward Screenshot to Admin", "type": "main", "index": 0 }]
+      ]
+    }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1" },
+  "versionId": "v1",
+  "meta": { "templateId": "restaurant-bot-01" },
+  "id": "restaurant-bot-workflow-01",
+  "tags": [{ "name": "restaurant-bot" }]
+}

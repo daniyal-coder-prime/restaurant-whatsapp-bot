@@ -1,0 +1,12 @@
+node_modules/
+backend/node_modules/
+backend/database/restaurant_bot.db
+backend/database/restaurant_bot.db-shm
+backend/database/restaurant_bot.db-wal
+backend/database/restaurant.db
+backend/database/restaurant.db-shm
+backend/database/restaurant.db-wal
+.env
+*.log
+.DS_Store
+Thumbs.db
